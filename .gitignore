@@ -25,6 +25,7 @@ ENV/
 .coverage
 htmlcov/
 *.xml
+*.yaml
 
 # IDE
 .vscode/

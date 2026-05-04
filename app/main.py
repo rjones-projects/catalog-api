@@ -1,18 +1,18 @@
 """
-Catalog API — fetches Catalog yaml files from GitHub repo and returns them as YAML.
+GitHub File API — fetches files from GitHub repos and returns them as YAML.
 """
 
 import base64
 import json
 import os
 import yaml
-from typing import Optional, Union
+from typing import Optional
 
 from dotenv import load_dotenv
 load_dotenv()
 
 from fastapi import FastAPI, HTTPException, Query, Depends
-from fastapi.responses import Response, JSONResponse
+from fastapi.responses import Response
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from github import Github, GithubException
 from pydantic import BaseModel
@@ -20,8 +20,8 @@ from pydantic import BaseModel
 # ── App setup ───────────────────────────────────────────────────────────────
 
 app = FastAPI(
-    title="Catalog API",
-    description="fetches Catalog yaml files from GitHub repo  and return them as YAML",
+    title="GitHub File API",
+    description="Fetch files from GitHub repositories and return them as YAML",
     version="1.0.0",
 )
 
@@ -34,7 +34,7 @@ security = HTTPBearer(auto_error=False)
 #   CATALOG_FILE   — path to the YAML file inside the repo (default: "catalog.yaml")
 #   CATALOG_REF    — branch/tag/SHA (default: "HEAD")
 
-CATALOG_OWNER = os.getenv("CATALOG_OWNER", "rjones-projects")
+CATALOG_OWNER = os.getenv("CATALOG_OWNER", "your-github-org")
 CATALOG_REPO  = os.getenv("CATALOG_REPO",  "catalog")
 CATALOG_FILE  = os.getenv("CATALOG_FILE",  "catalog.yaml")
 CATALOG_REF   = os.getenv("CATALOG_REF",   "HEAD")
@@ -85,10 +85,11 @@ def decode_content(content_bytes: bytes, path: str) -> object:
         except json.JSONDecodeError:
             pass
 
-    # YAML / YML files → already structured
+    # YAML / YML files → already structured; handle multi-document streams
     if path.endswith((".yaml", ".yml")):
         try:
-            return yaml.safe_load(text)
+            docs = [d for d in yaml.safe_load_all(text) if d is not None]
+            return docs[0] if len(docs) == 1 else docs
         except yaml.YAMLError:
             pass
 
@@ -104,9 +105,10 @@ def to_yaml_response(data: dict) -> Response:
 
 # ── Catalog helper ────────────────────────────────────────────────────────────
 
-def fetch_catalog(gh: Github) -> Union[list, dict]:
+def fetch_catalog(gh: Github) -> list:
     """
-    Pull catalog.yaml (or CATALOG_FILE) from the catalog repo and parse it.
+    Pull catalog.yaml from the catalog repo and parse all --- separated documents.
+    Always returns a list — one entry per YAML document in the file.
     Raises HTTPException on any GitHub or YAML error.
     """
     try:
@@ -127,14 +129,17 @@ def fetch_catalog(gh: Github) -> Union[list, dict]:
 
     raw_bytes = base64.b64decode(fc.content)
     try:
-        parsed = yaml.safe_load(raw_bytes.decode("utf-8", errors="replace"))
+        documents = list(yaml.safe_load_all(raw_bytes.decode("utf-8", errors="replace")))
     except yaml.YAMLError as exc:
         raise HTTPException(status_code=500, detail=f"Failed to parse catalog YAML: {exc}")
 
-    if parsed is None:
-        raise HTTPException(status_code=500, detail="Catalog file is empty")
+    # Filter out empty documents (e.g. trailing ---)
+    documents = [d for d in documents if d is not None]
 
-    return parsed
+    if not documents:
+        raise HTTPException(status_code=500, detail="Catalog file is empty or contains no valid documents")
+
+    return documents
 
 
 # ── Routes ───────────────────────────────────────────────────────────────────
@@ -143,10 +148,6 @@ def fetch_catalog(gh: Github) -> Union[list, dict]:
 def root():
     return {"message": "GitHub File API — visit /docs for usage"}
 
-
-@app.get("/healthz")
-def health():
-    return {"status": "ok"}
 
 # ── Catalog endpoints ────────────────────────────────────────────────────────
 
@@ -161,16 +162,18 @@ def health():
 )
 def get_catalog(gh: Github = Depends(get_github_client)):
     """
-    Fetches **the entire catalog** from the `catalog` GitHub repo and returns it as YAML.
+    Fetches **all documents** from the multi-document `catalog.yaml` and returns them
+    as a YAML stream separated by `---`, preserving the original structure.
 
     The catalog file location is controlled by environment variables:
-    - `CATALOG_OWNER` — GitHub user/org (default: `rjones-projects`)
+    - `CATALOG_OWNER` — GitHub user/org
     - `CATALOG_REPO`  — repo name (default: `catalog`)
     - `CATALOG_FILE`  — file path inside the repo (default: `catalog.yaml`)
     - `CATALOG_REF`   — branch/tag/SHA (default: `HEAD`)
     """
-    catalog = fetch_catalog(gh)
-    return to_yaml_response(catalog)
+    documents = fetch_catalog(gh)
+    yaml_str = yaml.dump_all(documents, allow_unicode=True, sort_keys=False, default_flow_style=False, explicit_start=True)
+    return Response(content=yaml_str, media_type="text/yaml; charset=utf-8")
 
 
 @app.get(
@@ -188,47 +191,32 @@ def get_catalog_item(
     gh: Github = Depends(get_github_client),
 ):
     """
-    Returns **a single item** from the catalog by position or key.
+    Returns **a single document** from the multi-document catalog by 0-based integer index.
 
-    - If the catalog root is a **list**, `index` must be an integer (0-based).
-      `GET /catalog/0` → first item, `GET /catalog/3` → fourth item.
-    - If the catalog root is a **dict/mapping**, `index` is treated as a key.
-      `GET /catalog/products` → value at key `products`.
+    - `GET /catalog/0` → first `---` document
+    - `GET /catalog/1` → second `---` document
+    - etc.
 
-    Returns a 404 if the index is out of range or the key does not exist.
+    Returns a 404 if the index is out of range.
     """
-    catalog = fetch_catalog(gh)
+    documents = fetch_catalog(gh)
 
-    # ── List catalog: integer index ──────────────────────────────────────────
-    if isinstance(catalog, list):
-        try:
-            i = int(index)
-        except ValueError:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Catalog is a list — index must be an integer, got '{index}'",
-            )
-        if i < 0 or i >= len(catalog):
-            raise HTTPException(
-                status_code=404,
-                detail=f"Index {i} is out of range — catalog has {len(catalog)} items (0–{len(catalog)-1})",
-            )
-        item = catalog[i]
+    try:
+        i = int(index)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Index must be an integer, got '{index}'",
+        )
 
-    # ── Dict catalog: string key ─────────────────────────────────────────────
-    elif isinstance(catalog, dict):
-        if index not in catalog:
-            available = ", ".join(str(k) for k in catalog.keys())
-            raise HTTPException(
-                status_code=404,
-                detail=f"Key '{index}' not found — available keys: {available}",
-            )
-        item = catalog[index]
+    if i < 0 or i >= len(documents):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Index {i} is out of range — catalog has {len(documents)} documents (0–{len(documents)-1})",
+        )
 
-    else:
-        raise HTTPException(status_code=500, detail="Catalog is neither a list nor a mapping")
+    item = documents[i]
 
-    # Wrap scalars so the response is always a valid YAML document
     if isinstance(item, (dict, list)):
         return to_yaml_response(item)
     return to_yaml_response({"value": item})
