@@ -1,134 +1,130 @@
-# GitHub File API
+# Terraform Module Resolver
 
-A RESTful API that fetches files from GitHub repositories and returns them as YAML.
+A lightweight REST API (FastAPI on Alpine Linux) that accepts a list of Terraform modules and returns ready-to-use `main.tf` and `variables.tf` files.
 
-## Setup
+## How it works
+
+1. Each module source is checked against the **Terraform Public Registry API** — if it matches the `<namespace>/<module>/<provider>` pattern, variable metadata is fetched automatically.
+2. For non-registry sources (GitHub, git URLs, local paths) the provider is **inferred from the source string**.
+3. Variables from all modules are **merged and deduplicated**; required variables (no upstream default) receive safe placeholder defaults and are annotated with a comment.
+4. The `terraform {}` block, provider stubs, module blocks, and `variables.tf` are generated in valid HCL.
+
+---
+
+## Running
 
 ```bash
+# Docker
+docker build -t resolver .
+docker run -p 8080:8080 resolver
+
+# Compose
+docker compose up
+
+# Local dev
 pip install -r requirements.txt
-cp .env.example .env   # add your GitHub token
-```
-
-## Run
-
-```bash
-uvicorn main:app --reload --port 8000
-```
-
-Interactive docs: http://localhost:8000/docs
-
----
-
-## Endpoints
-
-### GET `/repos/{owner}/{repo}/file`
-Fetch a single file as YAML.
-
-| Parameter | Type   | Description                          |
-|-----------|--------|--------------------------------------|
-| `path`    | string | File path in repo (required)         |
-| `ref`     | string | Branch/tag/SHA (default: HEAD)       |
-| `raw`     | bool   | Skip metadata envelope (default: false) |
-
-**Examples:**
-
-```bash
-# Fetch a JSON config file (parsed → structured YAML)
-curl "http://localhost:8000/repos/octocat/Hello-World/file?path=.github/workflows/ci.yml"
-
-# With auth token
-curl -H "Authorization: Bearer ghp_..." \
-     "http://localhost:8000/repos/myorg/private-repo/file?path=config/settings.json"
-
-# From a specific branch
-curl "http://localhost:8000/repos/owner/repo/file?path=README.md&ref=develop"
-
-# Raw content only (no metadata)
-curl "http://localhost:8000/repos/owner/repo/file?path=config.json&raw=true"
-```
-
-**Response:**
-```yaml
-repo: owner/repo
-path: config/settings.json
-branch: HEAD
-sha: abc123...
-size: 1024
-html_url: https://github.com/owner/repo/blob/main/config/settings.json
-content:
-  database:
-    host: localhost
-    port: 5432
-  debug: false
+uvicorn app.main:app --reload --port 8080
 ```
 
 ---
 
-### GET `/repos/{owner}/{repo}/files`
-Fetch multiple files in one request.
+## API
 
-```bash
-curl "http://localhost:8000/repos/owner/repo/files?paths=README.md&paths=package.json&paths=src/config.yaml"
+### `GET /healthz`
+Returns `{"status": "ok"}`.
+
+### `POST /resolve`
+
+**Request body**
+
+```json
+{
+  "modules": [
+    {
+      "source":  "terraform-aws-modules/vpc/aws",
+      "version": "~> 5.0",
+      "alias":   "vpc",
+      "inputs":  {
+        "vpc_cidr": "10.10.0.0/16"
+      }
+    },
+    {
+      "source":  "terraform-aws-modules/eks/aws",
+      "version": "~> 20.0"
+    }
+  ],
+  "terraform_version": "~> 1.6",
+  "backend": "s3",
+  "provider_overrides": {
+    "aws": "~> 5.50"
+  }
+}
 ```
 
-**Response:**
-```yaml
-repo: owner/repo
-ref: HEAD
-files:
-  README.md:
-    sha: abc...
-    size: 512
-    content: "# My Project\n..."
-  package.json:
-    sha: def...
-    size: 800
-    content:
-      name: my-project
-      version: 1.0.0
-  src/config.yaml:
-    sha: ghi...
-    size: 256
-    content:
-      env: production
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `modules` | array | ✅ | List of modules (min 1) |
+| `modules[].source` | string | ✅ | Registry path, git URL, or local path |
+| `modules[].version` | string | | Version constraint |
+| `modules[].alias` | string | | Override the generated module block name |
+| `modules[].inputs` | object | | Hard-coded variable overrides (skip `var.*` reference) |
+| `terraform_version` | string | | Default `~> 1.5` |
+| `backend` | string | | Backend type stub (`s3`, `gcs`, `azurerm`, `local`, …) |
+| `provider_overrides` | object | | Override detected provider versions |
+
+**Response**
+
+```json
+{
+  "main_tf": "terraform {\n  required_version = ...",
+  "variables_tf": "variable \"vpc_cidr\" {\n ...",
+  "summary": {
+    "modules_resolved": 2,
+    "variables_extracted": 31,
+    "providers_detected": ["hashicorp/aws"]
+  }
+}
 ```
 
 ---
 
-### GET `/repos/{owner}/{repo}/tree`
-List directory contents as YAML.
+## Example curl
 
 ```bash
-curl "http://localhost:8000/repos/owner/repo/tree?path=src"
+curl -s -X POST http://localhost:8080/resolve \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "modules": [
+      {"source": "terraform-aws-modules/vpc/aws", "version": "~> 5.0"},
+      {"source": "terraform-aws-modules/rds/aws", "version": "~> 6.0"}
+    ],
+    "backend": "s3"
+  }' | jq .
 ```
 
 ---
 
-### GET `/repos/{owner}/{repo}/info`
-Repository metadata as YAML.
+## Running tests
 
 ```bash
-curl "http://localhost:8000/repos/owner/repo/info"
+pip install pytest pytest-asyncio
+pytest tests/ -v
 ```
 
 ---
 
-## Authentication
+## Project structure
 
-Pass your GitHub token in one of two ways:
-
-```bash
-# Bearer header (recommended)
-curl -H "Authorization: Bearer ghp_yourtoken" ...
-
-# Query parameter
-curl "http://localhost:8000/...?token=ghp_yourtoken"
 ```
-
-Without a token: 60 requests/hour, public repos only.  
-With a token: 5,000 requests/hour, private repos accessible.
-
-#docker build -t resolver-api .
-#docker tag resolver-api europe-west2-docker.pkg.dev/idp-poc-495014/resolver-api/resolver-api:latest
-#docker push europe-west2-docker.pkg.dev/idp-poc-495014/resolver-api/resolver-api:latest
-#docker build -t resolver-api . && docker run -p 8080:8080 resolver-api
+resolver/
+├── app/
+│   ├── __init__.py
+│   ├── main.py          # FastAPI app, request/response models
+│   └── resolver.py      # Core resolution & HCL generation logic
+├── tests/
+│   └── test_resolver.py
+├── Dockerfile           # Multi-stage Alpine build
+├── docker-compose.yml
+├── requirements.txt
+└── README.md
+```
