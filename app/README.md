@@ -128,7 +128,7 @@ curl "http://localhost:8000/...?token=ghp_yourtoken"
 Without a token: 60 requests/hour, public repos only.  
 With a token: 5,000 requests/hour, private repos accessible.
 
-#docker build -t catalog-api .
-#docker tag catalog-api europe-west2-docker.pkg.dev/idp-poc-495014/catalog-api/catalog-api:latest
-#docker push europe-west2-docker.pkg.dev/idp-poc-495014/catalog-api/catalog-api:latest
-#docker build -t catalog-api . && docker run -p 8080:8080 catalog-api
+#docker build -t resolver-api .
+#docker tag resolver-api europe-west2-docker.pkg.dev/idp-poc-495014/resolver-api/resolver-api:latest
+#docker push europe-west2-docker.pkg.dev/idp-poc-495014/resolver-api/resolver-api:latest
+#docker build -t resolver-api . && docker run -p 8080:8080 resolver-api

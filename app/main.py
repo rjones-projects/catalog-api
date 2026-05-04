@@ -20,8 +20,8 @@ from pydantic import BaseModel
 # ── App setup ───────────────────────────────────────────────────────────────
 
 app = FastAPI(
-    title="GitHub File API",
-    description="Fetch files from GitHub repositories and return them as YAML",
+    title="Resolver API",
+    description="map modules from github repositories and return them as Terraform main.tf",
     version="1.0.0",
 )
 
