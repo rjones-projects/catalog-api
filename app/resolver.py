@@ -203,6 +203,8 @@ class TerraformResolver:
         """
         source = re.sub(r"^registry\.terraform\.io/", "", source)
         parts = source.split("/")
+        logger.info("Github path is %s", "/".join(parts))
+        
         if len(parts) == 3 and not any(p in source for p in ("github.com", "git::", "bitbucket")):
             return "/".join(parts)
         return None
