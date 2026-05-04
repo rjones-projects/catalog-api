@@ -34,7 +34,7 @@ security = HTTPBearer(auto_error=False)
 #   CATALOG_FILE   — path to the YAML file inside the repo (default: "catalog.yaml")
 #   CATALOG_REF    — branch/tag/SHA (default: "HEAD")
 
-CATALOG_OWNER = os.getenv("CATALOG_OWNER", "your-github-org")
+CATALOG_OWNER = os.getenv("CATALOG_OWNER", "rjones-projects")
 CATALOG_REPO  = os.getenv("CATALOG_REPO",  "catalog")
 CATALOG_FILE  = os.getenv("CATALOG_FILE",  "catalog.yaml")
 CATALOG_REF   = os.getenv("CATALOG_REF",   "HEAD")
@@ -148,6 +148,9 @@ def fetch_catalog(gh: Github) -> list:
 def root():
     return {"message": "GitHub File API — visit /docs for usage"}
 
+@app.get("/healthz")
+def health():
+    return {"status": "ok"}
 
 # ── Catalog endpoints ────────────────────────────────────────────────────────
 
