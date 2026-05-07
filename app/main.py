@@ -148,7 +148,7 @@ def fetch_catalog(gh: Github) -> list:
 def root():
     return {"message": "GitHub File API — visit /docs for usage"}
 
-@app.get("/healthz")
+@app.get("/health")
 def health():
     return {"status": "ok"}
 
