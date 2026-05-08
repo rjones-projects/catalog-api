@@ -128,3 +128,4 @@ resolver/
 ├── requirements.txt
 └── README.md
 ```
+# branching strategy enforced
