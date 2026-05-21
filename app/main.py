@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 from typing import Optional
 import logging
 
-from resolver import TerraformResolver
+from app.resolver import TerraformResolver
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
