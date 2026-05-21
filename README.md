@@ -137,6 +137,9 @@ gcloud iam service-accounts create github-actions  --project=idp-poc-495014
 # Grant required roles
 gcloud projects add-iam-policy-binding idp-poc-495014 --member="serviceAccount:github-actions@idp-poc-495014.iam.gserviceaccount.com" --role="roles/artifactregistry.writer"
 gcloud projects add-iam-policy-binding idp-poc-495014 --member="serviceAccount:github-actions@idp-poc-495014.iam.gserviceaccount.com" --role="roles/run.developer"
+#add IAM permissions
+gcloud iam service-accounts add-iam-policy-binding  479677124022-compute@developer.gserviceaccount.com --project=idp-poc-495014  --role="roles/iam.serviceAccountUser"  --member="serviceAccount:github-actions@idp-poc-495014.iam.gserviceaccount.com"
+
 
 # Create WIF pool + provider (swap in your GitHub org/repo)
 gcloud iam workload-identity-pools create github-pool --project=idp-poc-495014 --location=global
@@ -144,7 +147,6 @@ gcloud iam workload-identity-pools providers create-oidc github-provider --proje
 
 # Allow the pool to impersonate the SA
 gcloud iam service-accounts add-iam-policy-binding github-actions@idp-poc-495014.iam.gserviceaccount.com --project=idp-poc-495014 --role="roles/iam.workloadIdentityUser" --member="principalSet://iam.googleapis.com/projects/$(gcloud projects describe idp-poc-495014 --format='value(projectNumber)')/locations/global/workloadIdentityPools/github-pool/attribute.repository/rjones-projects/catalog-api"
-
 
 #create secrets
  Settings → Secrets and variables → Actions → New repository secret
