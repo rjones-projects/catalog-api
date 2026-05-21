@@ -156,3 +156,8 @@ gcloud iam workload-identity-pools providers describe github-provider --project=
 
 #secret - WIF_SERVICE_ACCOUNT
 github-actions@idp-poc-495014.iam.gserviceaccount.com
+
+#added github variables for 
+CATALOG_OWNER=rjones-projects
+CATALOG_REPO=catalog
+CATALOG_FILE=catalog.yaml
