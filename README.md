@@ -129,3 +129,28 @@ resolver/
 └── README.md
 ```
 # branching strategy enforced
+
+
+# Create a service account
+gcloud iam service-accounts create github-actions  --project=idp-poc-495014
+
+# Grant required roles
+gcloud projects add-iam-policy-binding idp-poc-495014 --member="serviceAccount:github-actions@idp-poc-495014.iam.gserviceaccount.com" --role="roles/artifactregistry.writer"
+gcloud projects add-iam-policy-binding idp-poc-495014 --member="serviceAccount:github-actions@idp-poc-495014.iam.gserviceaccount.com" --role="roles/run.developer"
+
+# Create WIF pool + provider (swap in your GitHub org/repo)
+gcloud iam workload-identity-pools create github-pool --project=idp-poc-495014 --location=global
+gcloud iam workload-identity-pools providers create-oidc github-provider --project=idp-poc-495014 --location=global --workload-identity-pool=github-pool --issuer-uri="https://token.actions.githubusercontent.com"  --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository" --attribute-condition="assertion.repository=='rjones-projects/catalog-api'"
+
+# Allow the pool to impersonate the SA
+gcloud iam service-accounts add-iam-policy-binding github-actions@idp-poc-495014.iam.gserviceaccount.com --project=idp-poc-495014 --role="roles/iam.workloadIdentityUser" --member="principalSet://iam.googleapis.com/projects/$(gcloud projects describe idp-poc-495014 --format='value(projectNumber)')/locations/global/workloadIdentityPools/github-pool/attribute.repository/rjones-projects/catalog-api"
+
+
+#create secrets
+ Settings → Secrets and variables → Actions → New repository secret
+
+#get the secret - WIF_PROVIDER
+gcloud iam workload-identity-pools providers describe github-provider --project=idp-poc-495014 --location=global --workload-identity-pool=github-pool --format="value(name)"
+
+#secret - WIF_SERVICE_ACCOUNT
+github-actions@idp-poc-495014.iam.gserviceaccount.com
