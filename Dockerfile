@@ -13,6 +13,9 @@ RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 # ── Stage 2: runtime ──────────────────────────────────────────────────────────
 FROM python:3.12-alpine AS runtime
 
+ARG GITHUB_TOKEN
+ENV GITHUB_TOKEN=$GITHUB_TOKEN
+
 LABEL org.opencontainers.image.title="terraform-resolver" \
       org.opencontainers.image.description="REST API that resolves Terraform modules and generates main.tf + variables.tf" \
       org.opencontainers.image.version="1.0.0"
