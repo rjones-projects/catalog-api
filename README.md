@@ -132,30 +132,30 @@ resolver/
 
 
 # Create a service account
-gcloud iam service-accounts create github-actions  --project=idp-poc-495014
+gcloud iam service-accounts create github-actions  --project=vf-gned-ngdi-alpha-ing
 
 # Grant required roles
-gcloud projects add-iam-policy-binding idp-poc-495014 --member="serviceAccount:github-actions@idp-poc-495014.iam.gserviceaccount.com" --role="roles/artifactregistry.writer"
-gcloud projects add-iam-policy-binding idp-poc-495014 --member="serviceAccount:github-actions@idp-poc-495014.iam.gserviceaccount.com" --role="roles/run.developer"
+gcloud projects add-iam-policy-binding vf-gned-ngdi-alpha-ing --member="serviceAccount:github-actions@vf-gned-ngdi-alpha-ing.iam.gserviceaccount.com" --role="roles/artifactregistry.writer"
+gcloud projects add-iam-policy-binding vf-gned-ngdi-alpha-ing --member="serviceAccount:github-actions@vf-gned-ngdi-alpha-ing.iam.gserviceaccount.com" --role="roles/run.developer"
 #add IAM permissions
-gcloud iam service-accounts add-iam-policy-binding  479677124022-compute@developer.gserviceaccount.com --project=idp-poc-495014  --role="roles/iam.serviceAccountUser"  --member="serviceAccount:github-actions@idp-poc-495014.iam.gserviceaccount.com"
-gcloud projects add-iam-policy-binding idp-poc-495014 --member="serviceAccount:github-actions@idp-poc-495014.iam.gserviceaccount.com" --role="roles/run.admin"
+gcloud iam service-accounts add-iam-policy-binding  479677124022-compute@developer.gserviceaccount.com --project=vf-gned-ngdi-alpha-ing  --role="roles/iam.serviceAccountUser"  --member="serviceAccount:github-actions@vf-gned-ngdi-alpha-ing.iam.gserviceaccount.com"
+gcloud projects add-iam-policy-binding vf-gned-ngdi-alpha-ing --member="serviceAccount:github-actions@vf-gned-ngdi-alpha-ing.iam.gserviceaccount.com" --role="roles/run.admin"
 
 # Create WIF pool + provider (swap in your GitHub org/repo)
-gcloud iam workload-identity-pools create github-pool --project=idp-poc-495014 --location=global
-gcloud iam workload-identity-pools providers create-oidc github-provider --project=idp-poc-495014 --location=global --workload-identity-pool=github-pool --issuer-uri="https://token.actions.githubusercontent.com"  --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository" --attribute-condition="assertion.repository=='rjones-projects/catalog-api'"
+gcloud iam workload-identity-pools create github-pool --project=vf-gned-ngdi-alpha-ing --location=global
+gcloud iam workload-identity-pools providers create-oidc github-provider --project=vf-gned-ngdi-alpha-ing --location=global --workload-identity-pool=github-pool --issuer-uri="https://token.actions.githubusercontent.com"  --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository" --attribute-condition="assertion.repository=='rjones-projects/catalog-api'"
 
 # Allow the pool to impersonate the SA
-gcloud iam service-accounts add-iam-policy-binding github-actions@idp-poc-495014.iam.gserviceaccount.com --project=idp-poc-495014 --role="roles/iam.workloadIdentityUser" --member="principalSet://iam.googleapis.com/projects/$(gcloud projects describe idp-poc-495014 --format='value(projectNumber)')/locations/global/workloadIdentityPools/github-pool/attribute.repository/rjones-projects/catalog-api"
+gcloud iam service-accounts add-iam-policy-binding github-actions@vf-gned-ngdi-alpha-ing.iam.gserviceaccount.com --project=vf-gned-ngdi-alpha-ing --role="roles/iam.workloadIdentityUser" --member="principalSet://iam.googleapis.com/projects/$(gcloud projects describe vf-gned-ngdi-alpha-ing --format='value(projectNumber)')/locations/global/workloadIdentityPools/github-pool/attribute.repository/rjones-projects/catalog-api"
 
 #create secrets
  Settings → Secrets and variables → Actions → New repository secret
 
 #get the secret - WIF_PROVIDER
-gcloud iam workload-identity-pools providers describe github-provider --project=idp-poc-495014 --location=global --workload-identity-pool=github-pool --format="value(name)"
+gcloud iam workload-identity-pools providers describe github-provider --project=vf-gned-ngdi-alpha-ing --location=global --workload-identity-pool=github-pool --format="value(name)"
 
 #secret - WIF_SERVICE_ACCOUNT
-github-actions@idp-poc-495014.iam.gserviceaccount.com
+github-actions@vf-gned-ngdi-alpha-ing.iam.gserviceaccount.com
 
 #added github variables for 
 CATALOG_OWNER=rjones-projects
@@ -164,6 +164,6 @@ CATALOG_FILE=catalog.yaml
 
 
 docker build -t catalog-api .
-#docker tag catalog-api europe-west2-docker.pkg.dev/idp-poc-495014/catalog-api/catalog-api:latest
-#docker push europe-west2-docker.pkg.dev/idp-poc-495014/catalog-api/catalog-api:latest
+#docker tag catalog-api europe-west2-docker.pkg.dev/vf-gned-ngdi-alpha-ing/catalog-api/catalog-api:latest
+#docker push europe-west2-docker.pkg.dev/vf-gned-ngdi-alpha-ing/catalog-api/catalog-api:latest
 #docker run -p 8080:8080 catalog-api 

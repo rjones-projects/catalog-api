@@ -5,12 +5,12 @@ on:
     branches: [main]
 
 env:
-  PROJECT_ID: idp-poc-495014
+  PROJECT_ID: vf-gned-ngdi-alpha-ing
   REGION: europe-west2
   REGISTRY: europe-west2-docker.pkg.dev
   REPOSITORY: catalog-api
   SERVICE: catalog-api
-  IMAGE: europe-west2-docker.pkg.dev/idp-poc-495014/catalog-api/catalog-api
+  IMAGE: europe-west2-docker.pkg.dev/vf-gned-ngdi-alpha-ing/catalog-api/catalog-api
 
 jobs:
   build-and-deploy:
