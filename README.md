@@ -161,3 +161,9 @@ github-actions@idp-poc-495014.iam.gserviceaccount.com
 CATALOG_OWNER=rjones-projects
 CATALOG_REPO=catalog
 CATALOG_FILE=catalog.yaml
+
+
+docker build -t catalog-api .
+#docker tag catalog-api europe-west2-docker.pkg.dev/idp-poc-495014/catalog-api/catalog-api:latest
+#docker push europe-west2-docker.pkg.dev/idp-poc-495014/catalog-api/catalog-api:latest
+#docker run -p 8080:8080 catalog-api 
