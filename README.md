@@ -113,17 +113,76 @@ pytest tests/ -v
 
 ---
 
+### `POST /catalog/resolve`
+
+Accepts a list of **building block** names, resolves them to GCP Terraform modules
+via [`gcp-mapping.yaml`](https://github.com/rjones-projects/catalog/blob/main/gcp-mapping.yaml),
+fetches each module's `variables.tf` from [`gcp_terraform-modules`](https://github.com/rjones-projects/gcp_terraform-modules),
+and returns ready-to-use `main.tf` and `variables.tf` files.
+
+**Request body**
+
+```json
+{
+  "building_blocks": ["bucket", "sql", "network"],
+  "terraform_version": "~> 1.9",
+  "backend": "gcs",
+  "modules_ref": "main"
+}
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `building_blocks` | array | ✅ | Building block names from the catalog (min 1) |
+| `terraform_version` | string | | Default `~> 1.9` |
+| `backend` | string | | Backend type stub (`gcs`, `s3`, `azurerm`, …) |
+| `modules_ref` | string | | Git ref to pin module sources to (default `main`) |
+
+**Response**
+
+```json
+{
+  "main_tf": "terraform {\n  required_version = ...",
+  "variables_tf": "variable \"project_id\" {\n ...",
+  "summary": {
+    "building_blocks_requested": ["bucket", "sql", "network"],
+    "building_blocks_resolved": ["bucket", "sql", "network"],
+    "building_blocks_unresolved": [],
+    "modules_resolved": ["gcs", "cloud_sql", "network", "firewall", "dns"],
+    "variables_extracted": 24,
+    "modules_with_fetch_errors": []
+  }
+}
+```
+
+**Available building blocks** (from catalog):
+`analytics`, `bastion`, `bucket`, `delivery`, `environment`, `iam`, `integration`,
+`k8s`, `keys`, `network`, `network-policy`, `platform-operations`, `pubsub`,
+`security-operations`, `security-policy`, `serverless_app`, `sql`, `vm_workload`, `workflow`
+
+**Example curl**
+
+```bash
+curl -s -X POST http://localhost:8080/catalog/resolve \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "building_blocks": ["bucket", "sql"],
+    "backend": "gcs"
+  }' | jq .
+```
+
+---
+
 ## Project structure
 
 ```
-resolver/
+catalog-api/
 ├── app/
 │   ├── __init__.py
-│   ├── main.py          # FastAPI app, request/response models
-│   └── resolver.py      # Core resolution & HCL generation logic
-├── tests/
-│   └── test_resolver.py
-├── Dockerfile           # Multi-stage Alpine build
+│   ├── main.py               # FastAPI app, routes, request/response models
+│   ├── resolver.py           # Terraform Registry resolver & HCL generation
+│   └── catalog_resolver.py  # Building-block → GCP module resolver
+├── Dockerfile
 ├── docker-compose.yml
 ├── requirements.txt
 └── README.md
@@ -167,3 +226,5 @@ docker build -t catalog-api .
 #docker tag catalog-api europe-west2-docker.pkg.dev/vf-gned-ngdi-alpha-ing/catalog-api/catalog-api:latest
 #docker push europe-west2-docker.pkg.dev/vf-gned-ngdi-alpha-ing/catalog-api/catalog-api:latest
 #docker run -p 8080:8080 catalog-api 
+
+

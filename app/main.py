@@ -4,6 +4,7 @@ GitHub File API — fetches files from GitHub repos and returns them as YAML.
 
 import base64
 import json
+import logging
 import os
 import yaml
 from typing import Optional
@@ -15,7 +16,12 @@ from fastapi import FastAPI, HTTPException, Query, Depends
 from fastapi.responses import Response
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from github import Github, GithubException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from app.catalog_resolver import CatalogResolver
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # ── App setup ───────────────────────────────────────────────────────────────
 
@@ -378,6 +384,66 @@ def get_multiple_files(
         "files": results,
     }
     return to_yaml_response(envelope)
+
+
+# ── Catalog resolve endpoint ─────────────────────────────────────────────────
+
+class CatalogResolveRequest(BaseModel):
+    building_blocks: list[str] = Field(
+        ...,
+        min_length=1,
+        description="List of catalog building block names, e.g. ['bucket', 'sql', 'network']",
+    )
+    terraform_version: Optional[str] = Field(
+        "~> 1.9",
+        description="Required Terraform version constraint",
+    )
+    backend: Optional[str] = Field(
+        None,
+        description="Backend type, e.g. 'gcs', 's3', 'azurerm'",
+    )
+    modules_ref: Optional[str] = Field(
+        "main",
+        description="Git ref (branch or tag) used to pin the module sources",
+    )
+
+
+class CatalogResolveResponse(BaseModel):
+    main_tf: str
+    variables_tf: str
+    summary: dict
+
+
+@app.post(
+    "/catalog/resolve",
+    response_model=CatalogResolveResponse,
+    summary="Resolve building blocks into Terraform files",
+    responses={
+        502: {"description": "Failed to fetch catalog mapping or module variables from GitHub"},
+    },
+)
+def resolve_catalog(request: CatalogResolveRequest):
+    """
+    Accepts a list of **building block** names (e.g. `bucket`, `sql`, `network`),
+    resolves them to GCP Terraform modules via the catalog mapping YAML, fetches
+    each module's `variables.tf` from GitHub, and returns a ready-to-use
+    `main.tf` and `variables.tf`.
+    """
+    try:
+        resolver = CatalogResolver(
+            building_blocks=request.building_blocks,
+            terraform_version=request.terraform_version or "~> 1.9",
+            backend=request.backend,
+            modules_ref=request.modules_ref or "main",
+        )
+        return resolver.resolve()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Unexpected error during catalog resolution")
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.get(

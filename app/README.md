@@ -16,7 +16,7 @@ A lightweight REST API (FastAPI on Alpine Linux) that accepts a list of Terrafor
 ```bash
 # Docker
 docker build -t resolver .
-docker run -p 8080:8080 resolver
+docker run -p 8080:8085 resolver
 
 # Compose
 docker compose up
@@ -30,7 +30,7 @@ uvicorn app.main:app --reload --port 8080
 
 ## API
 
-### `GET /healthz`
+### `GET /health`
 Returns `{"status": "ok"}`.
 
 ### `POST /resolve`
@@ -128,3 +128,7 @@ resolver/
 ├── requirements.txt
 └── README.md
 ```
+
+#to extract the TF files
+jq -r '.main_tf' output.json > main.tf
+jq -r '.variables_tf' output.json > variables.tf
