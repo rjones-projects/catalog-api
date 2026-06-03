@@ -446,6 +446,48 @@ def resolve_catalog(request: CatalogResolveRequest):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+class BuildingBlockResponse(BaseModel):
+    building_block: str
+    modules: list[str]
+    variables_tf: str
+
+
+@app.get(
+    "/buildingblock/{name}",
+    response_model=BuildingBlockResponse,
+    summary="Return variables.tf for a single building block",
+    responses={
+        404: {"description": "Building block not found in catalog"},
+        502: {"description": "Failed to fetch catalog mapping or module variables from GitHub"},
+    },
+)
+def get_building_block(
+    name: str,
+    ref: str = Query("main", description="Git ref to pin module sources to"),
+):
+    """
+    Resolves a single **building block** (e.g. `bucket`, `sql`, `network`) to its
+    constituent GCP Terraform modules and returns the merged `variables.tf`.
+    """
+    try:
+        resolver = CatalogResolver(building_blocks=[name], modules_ref=ref)
+        result = resolver.resolve()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except Exception as exc:
+        logger.exception("Unexpected error resolving building block '%s'", name)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    if name in result["summary"]["building_blocks_unresolved"]:
+        raise HTTPException(status_code=404, detail=f"Building block '{name}' not found in catalog")
+
+    return {
+        "building_block": name,
+        "modules": result["summary"]["modules_resolved"],
+        "variables_tf": result["variables_tf"],
+    }
+
+
 @app.get(
     "/repos/{owner}/{repo}/info",
     summary="Repository metadata as YAML",
