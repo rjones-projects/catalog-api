@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 import logging
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 import os
 
@@ -90,20 +90,38 @@ class CatalogResolver:
         self.backend = backend
         self.modules_ref = modules_ref
 
-    def resolve(self) -> dict:
+    def resolve(
+        self,
+        overrides_map: Optional[dict[str, Any]] = None,
+        tfvars_preamble: Optional[dict[str, Any]] = None,
+    ) -> dict:
+        """
+        Resolve building blocks into main.tf + variables.tf.
+        If overrides_map is provided (block → override dict or []), also produces terraform.tfvars.
+        """
         mapping = self._fetch_mapping()
-        modules = self._resolve_modules(mapping)
+
+        block_names = list(overrides_map.keys()) if overrides_map is not None else self.building_blocks
+        modules = self._resolve_modules(mapping, block_names)
+        modules_by_name = {m.name: m for m in modules}
+
         all_vars = self._collect_variables(modules)
         main_tf = self._render_main(modules)
         variables_tf = self._render_variables(all_vars)
+        terraform_tfvars = (
+            self._render_tfvars(overrides_map, mapping, modules_by_name, preamble=tfvars_preamble)
+            if overrides_map
+            else ""
+        )
 
-        unresolved = [b for b in self.building_blocks if b not in mapping]
+        unresolved = [b for b in block_names if b not in mapping]
         return {
             "main_tf": main_tf,
             "variables_tf": variables_tf,
+            "terraform_tfvars": terraform_tfvars,
             "summary": {
-                "building_blocks_requested": self.building_blocks,
-                "building_blocks_resolved": [b for b in self.building_blocks if b in mapping],
+                "building_blocks_requested": block_names,
+                "building_blocks_resolved": [b for b in block_names if b in mapping],
                 "building_blocks_unresolved": unresolved,
                 "modules_resolved": [m.name for m in modules],
                 "variables_extracted": len(all_vars),
@@ -156,9 +174,13 @@ class CatalogResolver:
     # Module resolution
     # ------------------------------------------------------------------
 
-    def _resolve_modules(self, mapping: dict[str, list[str]]) -> list[ResolvedModule]:
+    def _resolve_modules(
+        self,
+        mapping: dict[str, list[str]],
+        block_names: Optional[list[str]] = None,
+    ) -> list[ResolvedModule]:
         seen: dict[str, ResolvedModule] = {}
-        for block in self.building_blocks:
+        for block in (block_names if block_names is not None else self.building_blocks):
             for module_name in mapping.get(block, []):
                 if module_name in seen:
                     continue
@@ -405,3 +427,156 @@ class CatalogResolver:
             lines += ["}", ""]
 
         return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # terraform.tfvars generation
+    # ------------------------------------------------------------------
+
+    def _render_tfvars(
+        self,
+        overrides_map: dict[str, Any],
+        mapping: dict[str, list[str]],
+        modules_by_name: dict[str, ResolvedModule],
+        preamble: Optional[dict[str, Any]] = None,
+    ) -> str:
+        """
+        For each building block that carries override values, route each key to the
+        correct any-typed config variable (e.g. 'tier' under 'sql' becomes
+        cloud_sql = { tier = "premium" }) and render a terraform.tfvars block.
+
+        Top-level (unmatched) keys are deduplicated across building blocks — if the
+        same key appears in multiple blocks with the same value it is written once;
+        if values conflict, the later value wins and a warning comment is emitted.
+
+        Optional preamble dict is written first (e.g. project_id, region).
+        """
+        lines: list[str] = []
+        # Tracks top-level var names already written to avoid duplicates.
+        written_top_level: dict[str, Any] = {}
+
+        # Write preamble vars (project_id, region, etc.) before block sections.
+        if preamble:
+            for key, value in preamble.items():
+                lines.append(f"{key} = {self._render_hcl_value(value)}")
+                written_top_level[key] = value
+            lines.append("")
+
+        for block_name, overrides in overrides_map.items():
+            if isinstance(overrides, list):
+                overrides = {}
+            if not overrides:
+                continue
+            if block_name not in mapping:
+                lines.append(f"# WARNING: building block '{block_name}' not found in catalog — skipped.")
+                lines.append("")
+                continue
+
+            module_names = mapping[block_name]
+            lines.append(f"# {block_name} (modules: {', '.join(module_names) or 'none'})")
+
+            # Route each key to the matching any-typed config variable across modules.
+            var_assignments: dict[str, dict[str, Any]] = {}
+            unmatched: dict[str, Any] = dict(overrides)
+
+            for module_name in module_names:
+                mod = modules_by_name.get(module_name)
+                if not mod:
+                    continue
+                still_unmatched: dict[str, Any] = {}
+                for key, value in unmatched.items():
+                    config_var = self._find_config_var_for_key(key, mod)
+                    if config_var:
+                        var_assignments.setdefault(config_var, {})[key] = value
+                    else:
+                        still_unmatched[key] = value
+                unmatched = still_unmatched
+
+            for var_name, kv in var_assignments.items():
+                lines.append(f"{var_name} = {{")
+                for k, v in kv.items():
+                    lines.append(f"  {k} = {self._render_hcl_value(v, indent=1)}")
+                lines.append("}")
+
+            for key, value in unmatched.items():
+                if key in written_top_level:
+                    if written_top_level[key] != value:
+                        lines.append(
+                            f"# WARNING: '{key}' conflict — "
+                            f"was {self._render_hcl_value(written_top_level[key])}, "
+                            f"now {self._render_hcl_value(value)}."
+                        )
+                        lines.append(f"{key} = {self._render_hcl_value(value)}")
+                        written_top_level[key] = value
+                    # Same value already written — skip silently.
+                else:
+                    lines.append(f"{key} = {self._render_hcl_value(value)}")
+                    written_top_level[key] = value
+
+            lines.append("")
+
+        return "\n".join(lines)
+
+    def _find_config_var_for_key(self, key: str, mod: ResolvedModule) -> Optional[str]:
+        """
+        Find the any-typed config variable whose _default object contains 'key'
+        as a direct child field.
+        e.g. key='machine_type', mod=gke_standard_cluster  →  'gke_standard_cluster'
+        """
+        for var in mod.variables:
+            if not (var.name.endswith("_default") and "object(" in var.type_hcl):
+                continue
+            if key in self._extract_object_field_names(var.type_hcl):
+                config_var_name = var.name[: -len("_default")]
+                if any(v.name == config_var_name for v in mod.variables):
+                    return config_var_name
+        return None
+
+    @staticmethod
+    def _extract_object_field_names(type_hcl: str) -> set[str]:
+        """Extract direct (first-level) field names from an object({...}) HCL type."""
+        m = re.match(r"object\s*\(\s*\{", type_hcl)
+        if not m:
+            return set()
+        i, depth, chars = m.end(), 1, []
+        while i < len(type_hcl) and depth > 0:
+            c = type_hcl[i]
+            if c in ("{", "("):
+                depth += 1
+            elif c in ("}", ")"):
+                depth -= 1
+                if depth == 0:
+                    break
+            if depth == 1:
+                chars.append(c)
+            i += 1
+        return set(re.findall(r"^\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*=", "".join(chars), re.MULTILINE))
+
+    @staticmethod
+    def _render_hcl_value(value: Any, indent: int = 0) -> str:
+        """Render a Python value as a valid HCL literal."""
+        pad = "  " * indent
+        inner = "  " * (indent + 1)
+        if value is None:
+            return "null"
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, (int, float)):
+            return str(value)
+        if isinstance(value, str):
+            return f'"{value}"'
+        if isinstance(value, list):
+            if not value:
+                return "[]"
+            if all(not isinstance(v, (list, dict)) for v in value):
+                return "[" + ", ".join(CatalogResolver._render_hcl_value(v) for v in value) + "]"
+            rendered = [CatalogResolver._render_hcl_value(v, indent + 1) for v in value]
+            return "[\n" + ",\n".join(f"{inner}{r}" for r in rendered) + f"\n{pad}]"
+        if isinstance(value, dict):
+            if not value:
+                return "{}"
+            body = "\n".join(
+                f"{inner}{k} = {CatalogResolver._render_hcl_value(v, indent + 1)}"
+                for k, v in value.items()
+            )
+            return "{\n" + body + f"\n{pad}}}"
+        return f'"{value}"'
