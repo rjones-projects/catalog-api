@@ -134,6 +134,6 @@ CATALOG_FILE=catalog.yaml
 docker build -t catalog-api .
 #docker tag catalog-api europe-west2-docker.pkg.dev/vf-gned-ngdi-alpha-ing/catalog-api/catalog-api:latest
 #docker push europe-west2-docker.pkg.dev/vf-gned-ngdi-alpha-ing/catalog-api/catalog-api:latest
-#docker run -p 8080:8080 catalog-api 
+#docker run -p 8082:8080 catalog-api 
 
 

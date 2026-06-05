@@ -138,6 +138,14 @@ class CatalogResolver:
             docs = get_client().proxy_catalog_file(
                 CATALOG_OWNER, CATALOG_REPO, CATALOG_MAPPING_FILE
             )
+        except httpx.HTTPStatusError as exc:
+            # str(HTTPStatusError) omits the body, so surface the upstream detail
+            # explicitly — otherwise a GitHub 403 rate-limit reads as a bare 404.
+            upstream = exc.response.text.strip()
+            detail = f"Failed to fetch catalog mapping: {exc}"
+            if upstream:
+                detail = f"{detail} (file service said: {upstream})"
+            raise RuntimeError(detail) from exc
         except Exception as exc:
             raise RuntimeError(f"Failed to fetch catalog mapping: {exc}") from exc
 

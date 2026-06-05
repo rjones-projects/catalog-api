@@ -60,10 +60,13 @@ def fetch_catalog() -> list:
             CATALOG_OWNER, CATALOG_REPO, CATALOG_FILE, ref=CATALOG_REF
         )
     except httpx.HTTPStatusError as exc:
-        raise HTTPException(
-            status_code=exc.response.status_code,
-            detail=f"Catalog file '{CATALOG_FILE}' not found or inaccessible",
-        )
+        # Surface the upstream file-service detail so genuine causes (e.g. a
+        # GitHub 403 rate-limit relayed as a 404) aren't masked as "not found".
+        upstream = exc.response.text.strip()
+        detail = f"Catalog file '{CATALOG_FILE}' not found or inaccessible"
+        if upstream:
+            detail = f"{detail} (file service said: {upstream})"
+        raise HTTPException(status_code=exc.response.status_code, detail=detail)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"File service error: {exc}")
 
