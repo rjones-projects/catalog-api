@@ -22,7 +22,7 @@ from typing import Any, Optional
 
 import httpx
 
-from app.file_client import FileServiceClient, get_client
+from app.file_client import get_client
 
 logger = logging.getLogger(__name__)
 
