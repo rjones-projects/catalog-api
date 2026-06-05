@@ -15,15 +15,13 @@ import httpx
 import yaml
 
 FILE_SERVICE_URL: str = os.getenv("FILE_SERVICE_URL", "https://repo-api-479677124022.europe-west2.run.app")
-GH_TOKEN: Optional[str] = os.getenv("GH_TOKEN")
 
 
 class FileServiceClient:
     """HTTP client that fetches files via the local GitHub file service."""
 
-    def __init__(self, base_url: Optional[str] = None, token: Optional[str] = None):
+    def __init__(self, base_url: Optional[str] = None):
         self.base_url = (base_url or FILE_SERVICE_URL).rstrip("/")
-        self.token = token if token is not None else GH_TOKEN
 
     # ------------------------------------------------------------------
     # Low-level request
@@ -32,11 +30,8 @@ class FileServiceClient:
     def _get(self, endpoint: str, **params: Any) -> httpx.Response:
         url = f"{self.base_url}{endpoint}"
         filtered = {k: v for k, v in params.items() if v is not None}
-        # repo-api authenticates via an Authorization: Bearer <token> header
-        # (the token used to be passed as a ?token= query param).
-        headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
         with httpx.Client(timeout=15) as client:
-            resp = client.get(url, params=filtered, headers=headers)
+            resp = client.get(url, params=filtered)
         resp.raise_for_status()
         return resp
 
@@ -97,5 +92,5 @@ class FileServiceClient:
 
 
 def get_client() -> FileServiceClient:
-    """Return a FileServiceClient configured from FILE_SERVICE_URL and GH_TOKEN."""
-    return FileServiceClient(FILE_SERVICE_URL, GH_TOKEN)
+    """Return a FileServiceClient configured from FILE_SERVICE_URL."""
+    return FileServiceClient(FILE_SERVICE_URL)
