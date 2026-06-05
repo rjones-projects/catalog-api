@@ -66,41 +66,8 @@ class FileServiceClient:
         return content if isinstance(content, str) else yaml.dump(content, allow_unicode=True)
 
     # ------------------------------------------------------------------
-    # Proxy helpers used by main.py route handlers
+    # Catalog file helper used by main.py route handlers
     # ------------------------------------------------------------------
-
-    def proxy_file(
-        self,
-        owner: str,
-        repo: str,
-        path: str,
-        ref: str = "HEAD",
-        raw: bool = False,
-    ) -> httpx.Response:
-        """Forward a file request to the service, returning the raw response."""
-        params: dict[str, Any] = {"path": path, "ref": ref}
-        if raw:
-            params["raw"] = "true"
-        return self._get(f"/repos/{owner}/{repo}/file", **params)
-
-    def proxy_tree(
-        self, owner: str, repo: str, path: str = "", ref: str = "HEAD"
-    ) -> httpx.Response:
-        return self._get(f"/repos/{owner}/{repo}/tree", path=path, ref=ref)
-
-    def proxy_files(
-        self, owner: str, repo: str, paths: list[str], ref: str = "HEAD"
-    ) -> httpx.Response:
-        url = f"{self.base_url}/repos/{owner}/{repo}/files"
-        params: list[tuple[str, str]] = [(k, v) for k, v in [("ref", ref)] if v]
-        params += [("paths", p) for p in paths]
-        with httpx.Client(timeout=15) as client:
-            resp = client.get(url, params=params)
-        resp.raise_for_status()
-        return resp
-
-    def proxy_repo_info(self, owner: str, repo: str) -> httpx.Response:
-        return self._get(f"/repos/{owner}/{repo}/info")
 
     def proxy_catalog_file(
         self,

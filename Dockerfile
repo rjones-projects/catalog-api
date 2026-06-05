@@ -13,12 +13,12 @@ RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 # ── Stage 2: runtime ──────────────────────────────────────────────────────────
 FROM python:3.12-alpine AS runtime
 
-LABEL org.opencontainers.image.title="terraform-resolver" \
-      org.opencontainers.image.description="REST API that resolves Terraform modules and generates main.tf + variables.tf" \
+LABEL org.opencontainers.image.title="catalog-api" \
+      org.opencontainers.image.description="REST API that serves the catalog and building-block definitions as YAML" \
       org.opencontainers.image.version="1.0.0"
 
 # Non-root user for security
-RUN addgroup -S resolver && adduser -S resolver -G resolver
+RUN addgroup -S catalog && adduser -S catalog -G catalog
 
 WORKDIR /app
 
@@ -28,7 +28,7 @@ COPY --from=builder /install /usr/local
 # Copy application source
 COPY app/ ./app/
 
-USER resolver
+USER catalog
 
 EXPOSE 8080
 

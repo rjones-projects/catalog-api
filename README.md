@@ -1,13 +1,16 @@
-# Terraform Module Resolver
+# Catalog API
 
-A lightweight REST API (FastAPI on Alpine Linux) that accepts a list of Terraform modules and returns ready-to-use `main.tf` and `variables.tf` files.
+A lightweight REST API (FastAPI on Alpine Linux) that serves the catalog and
+building-block definitions sourced from GitHub via a configurable file service.
 
 ## How it works
 
-1. Each module source is checked against the **Terraform Public Registry API** — if it matches the `<namespace>/<module>/<provider>` pattern, variable metadata is fetched automatically.
-2. For non-registry sources (GitHub, git URLs, local paths) the provider is **inferred from the source string**.
-3. Variables from all modules are **merged and deduplicated**; required variables (no upstream default) receive safe placeholder defaults and are annotated with a comment.
-4. The `terraform {}` block, provider stubs, module blocks, and `variables.tf` are generated in valid HCL.
+1. The `/catalog` endpoints fetch a multi-document YAML catalog file via the file
+   service and return it as YAML.
+2. The `/buildingblock/{name}` endpoint resolves a single building block to its
+   constituent GCP Terraform modules via [`gcp-mapping.yaml`](https://github.com/rjones-projects/catalog/blob/main/gcp-mapping.yaml),
+   fetches each module's `variables.tf` from [`gcp_terraform-modules`](https://github.com/rjones-projects/gcp_terraform-modules),
+   and returns the merged `variables.tf`.
 
 ---
 
@@ -15,11 +18,8 @@ A lightweight REST API (FastAPI on Alpine Linux) that accepts a list of Terrafor
 
 ```bash
 # Docker
-docker build -t resolver .
-docker run -p 8080:8080 resolver
-
-# Compose
-docker compose up
+docker build -t catalog-api .
+docker run -p 8080:8080 catalog-api
 
 # Local dev
 pip install -r requirements.txt
@@ -30,128 +30,45 @@ uvicorn app.main:app --reload --port 8080
 
 ## API
 
-### `GET /healthz`
+### `GET /health`
 Returns `{"status": "ok"}`.
 
-### `POST /resolve`
+### `GET /catalog`
 
-**Request body**
+Returns **all documents** from the catalog file as a YAML stream separated by `---`.
 
-```json
-{
-  "modules": [
-    {
-      "source":  "terraform-aws-modules/vpc/aws",
-      "version": "~> 5.0",
-      "alias":   "vpc",
-      "inputs":  {
-        "vpc_cidr": "10.10.0.0/16"
-      }
-    },
-    {
-      "source":  "terraform-aws-modules/eks/aws",
-      "version": "~> 20.0"
-    }
-  ],
-  "terraform_version": "~> 1.6",
-  "backend": "s3",
-  "provider_overrides": {
-    "aws": "~> 5.50"
-  }
-}
+Controlled by environment variables: `CATALOG_OWNER`, `CATALOG_REPO`,
+`CATALOG_FILE`, `CATALOG_REF`, and `FILE_SERVICE_URL`.
+
+```bash
+curl -s http://localhost:8080/catalog
 ```
 
-| Field | Type | Required | Description |
+### `GET /catalog/{index}`
+
+Returns **a single document** from the multi-document catalog by 0-based integer index.
+
+```bash
+curl -s http://localhost:8080/catalog/0
+```
+
+### `GET /buildingblock/{name}`
+
+Resolves a single **building block** (e.g. `bucket`, `sql`, `network`) to its
+constituent GCP Terraform modules and returns the merged `variables.tf`.
+
+| Param | In | Required | Description |
 |---|---|---|---|
-| `modules` | array | ✅ | List of modules (min 1) |
-| `modules[].source` | string | ✅ | Registry path, git URL, or local path |
-| `modules[].version` | string | | Version constraint |
-| `modules[].alias` | string | | Override the generated module block name |
-| `modules[].inputs` | object | | Hard-coded variable overrides (skip `var.*` reference) |
-| `terraform_version` | string | | Default `~> 1.5` |
-| `backend` | string | | Backend type stub (`s3`, `gcs`, `azurerm`, `local`, …) |
-| `provider_overrides` | object | | Override detected provider versions |
+| `name` | path | ✅ | Building block name from the catalog |
+| `ref` | query | | Git ref to pin module sources to (default `main`) |
 
 **Response**
 
 ```json
 {
-  "main_tf": "terraform {\n  required_version = ...",
-  "variables_tf": "variable \"vpc_cidr\" {\n ...",
-  "summary": {
-    "modules_resolved": 2,
-    "variables_extracted": 31,
-    "providers_detected": ["hashicorp/aws"]
-  }
-}
-```
-
----
-
-## Example curl
-
-```bash
-curl -s -X POST http://localhost:8080/resolve \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "modules": [
-      {"source": "terraform-aws-modules/vpc/aws", "version": "~> 5.0"},
-      {"source": "terraform-aws-modules/rds/aws", "version": "~> 6.0"}
-    ],
-    "backend": "s3"
-  }' | jq .
-```
-
----
-
-## Running tests
-
-```bash
-pip install pytest pytest-asyncio
-pytest tests/ -v
-```
-
----
-
-### `POST /catalog/resolve`
-
-Accepts a list of **building block** names, resolves them to GCP Terraform modules
-via [`gcp-mapping.yaml`](https://github.com/rjones-projects/catalog/blob/main/gcp-mapping.yaml),
-fetches each module's `variables.tf` from [`gcp_terraform-modules`](https://github.com/rjones-projects/gcp_terraform-modules),
-and returns ready-to-use `main.tf` and `variables.tf` files.
-
-**Request body**
-
-```json
-{
-  "building_blocks": ["bucket", "sql", "network"],
-  "terraform_version": "~> 1.9",
-  "backend": "gcs",
-  "modules_ref": "main"
-}
-```
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `building_blocks` | array | ✅ | Building block names from the catalog (min 1) |
-| `terraform_version` | string | | Default `~> 1.9` |
-| `backend` | string | | Backend type stub (`gcs`, `s3`, `azurerm`, …) |
-| `modules_ref` | string | | Git ref to pin module sources to (default `main`) |
-
-**Response**
-
-```json
-{
-  "main_tf": "terraform {\n  required_version = ...",
-  "variables_tf": "variable \"project_id\" {\n ...",
-  "summary": {
-    "building_blocks_requested": ["bucket", "sql", "network"],
-    "building_blocks_resolved": ["bucket", "sql", "network"],
-    "building_blocks_unresolved": [],
-    "modules_resolved": ["gcs", "cloud_sql", "network", "firewall", "dns"],
-    "variables_extracted": 24,
-    "modules_with_fetch_errors": []
-  }
+  "building_block": "bucket",
+  "modules": ["gcs"],
+  "variables_tf": "variable \"project_id\" {\n ..."
 }
 ```
 
@@ -160,15 +77,8 @@ and returns ready-to-use `main.tf` and `variables.tf` files.
 `k8s`, `keys`, `network`, `network-policy`, `platform-operations`, `pubsub`,
 `security-operations`, `security-policy`, `serverless_app`, `sql`, `vm_workload`, `workflow`
 
-**Example curl**
-
 ```bash
-curl -s -X POST http://localhost:8080/catalog/resolve \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "building_blocks": ["bucket", "sql"],
-    "backend": "gcs"
-  }' | jq .
+curl -s "http://localhost:8080/buildingblock/bucket?ref=main" | jq .
 ```
 
 ---
@@ -179,11 +89,10 @@ curl -s -X POST http://localhost:8080/catalog/resolve \
 catalog-api/
 ├── app/
 │   ├── __init__.py
-│   ├── main.py               # FastAPI app, routes, request/response models
-│   ├── resolver.py           # Terraform Registry resolver & HCL generation
-│   └── catalog_resolver.py  # Building-block → GCP module resolver
+│   ├── main.py              # FastAPI app, routes, response models
+│   ├── catalog_resolver.py  # Building-block → GCP module resolver
+│   └── file_client.py       # Client for the GitHub file service
 ├── Dockerfile
-├── docker-compose.yml
 ├── requirements.txt
 └── README.md
 ```
