@@ -14,29 +14,28 @@ Produces:
 
 from __future__ import annotations
 
+import os
 import re
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-import os
-
 import httpx
-import yaml
+
+from app.file_client import FileServiceClient, get_client
 
 logger = logging.getLogger(__name__)
 
-CATALOG_YAML_URL = "https://raw.githubusercontent.com/rjones-projects/catalog/main/gcp-mapping.yaml"
-GCP_MODULES_RAW = "https://raw.githubusercontent.com/rjones-projects/gcp_terraform-modules/main/terraform/modules"
-GCP_MODULES_SOURCE = "github.com/rjones-projects/gcp_terraform-modules"
-GCP_MODULES_SUBDIR = "terraform/modules"
+# Repository coordinates — all configurable via environment variables.
+CATALOG_OWNER        = os.getenv("CATALOG_OWNER",        "rjones-projects")
+CATALOG_REPO         = os.getenv("CATALOG_REPO",         "catalog")
+CATALOG_MAPPING_FILE = os.getenv("CATALOG_MAPPING_FILE", "gcp-mapping.yaml")
+MODULES_OWNER        = os.getenv("MODULES_OWNER",        "rjones-projects")
+MODULES_REPO         = os.getenv("MODULES_REPO",         "gcp_terraform-modules")
+MODULES_SUBDIR       = os.getenv("MODULES_SUBDIR",       "terraform/modules")
 
-
-def _github_headers() -> dict[str, str]:
-    token = os.environ.get("GITHUB_TOKEN")
-    if token:
-        return {"Authorization": f"token {token}"}
-    return {}
+# Used in generated main.tf module source URLs (not for HTTP calls).
+GCP_MODULES_SOURCE = f"github.com/{MODULES_OWNER}/{MODULES_REPO}"
 
 _TYPE_DEFAULTS: dict[str, str] = {
     "string":       '""',
@@ -134,17 +133,16 @@ class CatalogResolver:
     # ------------------------------------------------------------------
 
     def _fetch_mapping(self) -> dict[str, list[str]]:
-        """Fetch the multi-document Backstage YAML and return building_block -> [module_names]."""
+        """Fetch the Backstage catalog YAML via the file service and return building_block -> [module_names]."""
         try:
-            with httpx.Client(timeout=15) as client:
-                resp = client.get(CATALOG_YAML_URL, headers=_github_headers())
-                resp.raise_for_status()
-                content = resp.text
+            docs = get_client().proxy_catalog_file(
+                CATALOG_OWNER, CATALOG_REPO, CATALOG_MAPPING_FILE
+            )
         except Exception as exc:
             raise RuntimeError(f"Failed to fetch catalog mapping: {exc}") from exc
 
         mapping: dict[str, list[str]] = {}
-        for doc in yaml.safe_load_all(content):
+        for doc in docs:
             if not isinstance(doc, dict) or doc.get("kind") != "Component":
                 continue
             name = (doc.get("metadata") or {}).get("name", "")
@@ -184,7 +182,7 @@ class CatalogResolver:
             for module_name in mapping.get(block, []):
                 if module_name in seen:
                     continue
-                source = f"{GCP_MODULES_SOURCE}//{GCP_MODULES_SUBDIR}/{module_name}?ref={self.modules_ref}"
+                source = f"{GCP_MODULES_SOURCE}//{MODULES_SUBDIR}/{module_name}?ref={self.modules_ref}"
                 variables, error = self._fetch_module_variables(module_name)
                 seen[module_name] = ResolvedModule(
                     name=module_name,
@@ -199,14 +197,15 @@ class CatalogResolver:
     # ------------------------------------------------------------------
 
     def _fetch_module_variables(self, module_name: str) -> tuple[list[CatalogVariable], Optional[str]]:
-        url = f"{GCP_MODULES_RAW}/{module_name}/variables.tf"
+        path = f"{MODULES_SUBDIR}/{module_name}/variables.tf"
         try:
-            with httpx.Client(timeout=10) as client:
-                resp = client.get(url, headers=_github_headers())
-                if resp.status_code == 404:
-                    return [], f"variables.tf not found for module '{module_name}'"
-                resp.raise_for_status()
-                return self._parse_variables_tf(resp.text), None
+            content = get_client().get_text_file(MODULES_OWNER, MODULES_REPO, path, ref=self.modules_ref)
+            return self._parse_variables_tf(content), None
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return [], f"variables.tf not found for module '{module_name}'"
+            logger.warning("Failed to fetch variables.tf for %s: %s", module_name, exc)
+            return [], str(exc)
         except Exception as exc:
             logger.warning("Failed to fetch variables.tf for %s: %s", module_name, exc)
             return [], str(exc)

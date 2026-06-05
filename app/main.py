@@ -1,24 +1,22 @@
 """
-GitHub File API — fetches files from GitHub repos and returns them as YAML.
+GitHub File API — proxies all GitHub file access through the configured file service.
 """
 
-import base64
-import json
 import logging
 import os
 import yaml
 from typing import Any, Optional
 
+import httpx
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import FastAPI, HTTPException, Query, Depends
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import Response
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from github import Github, GithubException
 from pydantic import BaseModel, Field
 
 from app.catalog_resolver import CatalogResolver
+from app.file_client import FileServiceClient, get_client
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -31,14 +29,10 @@ app = FastAPI(
     version="1.0.0",
 )
 
-security = HTTPBearer(auto_error=False)
-
 # ── Catalog config ───────────────────────────────────────────────────────────
-# Override these via environment variables:
-#   CATALOG_OWNER  — GitHub user/org that owns the catalog repo
-#   CATALOG_REPO   — repo name (default: "catalog")
-#   CATALOG_FILE   — path to the YAML file inside the repo (default: "catalog.yaml")
-#   CATALOG_REF    — branch/tag/SHA (default: "HEAD")
+# CATALOG_OWNER / CATALOG_REPO / CATALOG_FILE / CATALOG_REF control which
+# file the /catalog endpoint serves. FILE_SERVICE_URL (in file_client.py)
+# controls where all GitHub calls are routed.
 
 CATALOG_OWNER = os.getenv("CATALOG_OWNER", "rjones-projects")
 CATALOG_REPO  = os.getenv("CATALOG_REPO",  "catalog")
@@ -46,106 +40,44 @@ CATALOG_FILE  = os.getenv("CATALOG_FILE",  "catalog.yaml")
 CATALOG_REF   = os.getenv("CATALOG_REF",   "HEAD")
 
 
-# ── Models ───────────────────────────────────────────────────────────────────
-
-class FileResponse(BaseModel):
-    repo: str
-    path: str
-    branch: str
-    sha: str
-    size: int
-    content: object  # parsed file content (dict/list/str)
-    encoding: str
-
-
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-def get_github_client(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
-    token: Optional[str] = Query(None, description="GitHub Personal Access Token"),
-) -> Github:
-    """Resolve GitHub token from Bearer header or ?token= query param."""
-    resolved_token = None
-    if credentials:
-        resolved_token = credentials.credentials
-    elif token:
-        resolved_token = token
-
-    if resolved_token:
-        return Github(resolved_token)
-    # Anonymous — 60 req/hr rate limit, public repos only
-    return Github()
-
-
-def decode_content(content_bytes: bytes, path: str) -> object:
-    """
-    Attempt to parse the raw bytes into a Python object.
-    Priority: JSON → YAML → plain text
-    """
-    text = content_bytes.decode("utf-8", errors="replace")
-
-    # JSON files → parsed dict/list
-    if path.endswith(".json"):
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            pass
-
-    # YAML / YML files → already structured; handle multi-document streams
-    if path.endswith((".yaml", ".yml")):
-        try:
-            docs = [d for d in yaml.safe_load_all(text) if d is not None]
-            return docs[0] if len(docs) == 1 else docs
-        except yaml.YAMLError:
-            pass
-
-    # Everything else: return as plain string (YAML will quote it)
-    return text
-
-
-def to_yaml_response(data: dict) -> Response:
-    """Serialize a dict to YAML and return as text/yaml."""
+def to_yaml_response(data: object) -> Response:
+    """Serialize a Python object to YAML and return as text/yaml."""
     yaml_str = yaml.dump(data, allow_unicode=True, sort_keys=False, default_flow_style=False)
     return Response(content=yaml_str, media_type="text/yaml; charset=utf-8")
 
 
+def _proxy_response(upstream: httpx.Response) -> Response:
+    """Forward an upstream file-service response verbatim."""
+    return Response(content=upstream.content, media_type="text/yaml; charset=utf-8")
+
+
+def _service_error(exc: Exception, detail: str) -> HTTPException:
+    """Map a file-service HTTP error to a FastAPI HTTPException."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        return HTTPException(status_code=exc.response.status_code, detail=detail)
+    return HTTPException(status_code=502, detail=f"File service error: {exc}")
+
+
 # ── Catalog helper ────────────────────────────────────────────────────────────
 
-def fetch_catalog(gh: Github) -> list:
+def fetch_catalog() -> list:
     """
-    Pull catalog.yaml from the catalog repo and parse all --- separated documents.
-    Always returns a list — one entry per YAML document in the file.
-    Raises HTTPException on any GitHub or YAML error.
+    Fetch the catalog file from the file service and return parsed documents.
+    Raises HTTPException on error.
     """
     try:
-        repo = gh.get_repo(f"{CATALOG_OWNER}/{CATALOG_REPO}")
-    except GithubException as exc:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Catalog repo '{CATALOG_OWNER}/{CATALOG_REPO}' not found: {exc.data.get('message', exc)}",
+        return get_client().proxy_catalog_file(
+            CATALOG_OWNER, CATALOG_REPO, CATALOG_FILE, ref=CATALOG_REF
         )
-
-    try:
-        fc = repo.get_contents(CATALOG_FILE, ref=CATALOG_REF)
-    except GithubException as exc:
+    except httpx.HTTPStatusError as exc:
         raise HTTPException(
-            status_code=404,
-            detail=f"Catalog file '{CATALOG_FILE}' not found: {exc.data.get('message', exc)}",
+            status_code=exc.response.status_code,
+            detail=f"Catalog file '{CATALOG_FILE}' not found or inaccessible",
         )
-
-    raw_bytes = base64.b64decode(fc.content)
-    try:
-        documents = list(yaml.safe_load_all(raw_bytes.decode("utf-8", errors="replace")))
-    except yaml.YAMLError as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to parse catalog YAML: {exc}")
-
-    # Filter out empty documents (e.g. trailing ---)
-    documents = [d for d in documents if d is not None]
-
-    if not documents:
-        raise HTTPException(status_code=500, detail="Catalog file is empty or contains no valid documents")
-
-    return documents
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"File service error: {exc}")
 
 
 # ── Routes ───────────────────────────────────────────────────────────────────
@@ -169,19 +101,23 @@ def health():
         404: {"description": "Catalog repo or file not found"},
     },
 )
-def get_catalog(gh: Github = Depends(get_github_client)):
+def get_catalog():
     """
-    Fetches **all documents** from the multi-document `catalog.yaml` and returns them
-    as a YAML stream separated by `---`, preserving the original structure.
+    Fetches **all documents** from the catalog file via the file service and returns
+    them as a YAML stream separated by `---`.
 
-    The catalog file location is controlled by environment variables:
-    - `CATALOG_OWNER` — GitHub user/org
-    - `CATALOG_REPO`  — repo name (default: `catalog`)
-    - `CATALOG_FILE`  — file path inside the repo (default: `catalog.yaml`)
-    - `CATALOG_REF`   — branch/tag/SHA (default: `HEAD`)
+    Controlled by environment variables:
+    - `CATALOG_OWNER`, `CATALOG_REPO`, `CATALOG_FILE`, `CATALOG_REF`
+    - `FILE_SERVICE_URL` — base URL of the file service (default: https://repo-api-479677124022.europe-west2.run.app)
     """
-    documents = fetch_catalog(gh)
-    yaml_str = yaml.dump_all(documents, allow_unicode=True, sort_keys=False, default_flow_style=False, explicit_start=True)
+    documents = fetch_catalog()
+    yaml_str = yaml.dump_all(
+        documents,
+        allow_unicode=True,
+        sort_keys=False,
+        default_flow_style=False,
+        explicit_start=True,
+    )
     return Response(content=yaml_str, media_type="text/yaml; charset=utf-8")
 
 
@@ -191,44 +127,29 @@ def get_catalog(gh: Github = Depends(get_github_client)):
     response_class=Response,
     responses={
         200: {"content": {"text/yaml": {}}},
-        400: {"description": "Catalog is not a list — use a key instead"},
-        404: {"description": "Index out of range or key not found"},
+        400: {"description": "Index is not an integer"},
+        404: {"description": "Index out of range"},
     },
 )
-def get_catalog_item(
-    index: str,
-    gh: Github = Depends(get_github_client),
-):
+def get_catalog_item(index: str):
     """
     Returns **a single document** from the multi-document catalog by 0-based integer index.
-
-    - `GET /catalog/0` → first `---` document
-    - `GET /catalog/1` → second `---` document
-    - etc.
-
-    Returns a 404 if the index is out of range.
     """
-    documents = fetch_catalog(gh)
+    documents = fetch_catalog()
 
     try:
         i = int(index)
     except ValueError:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Index must be an integer, got '{index}'",
-        )
+        raise HTTPException(status_code=400, detail=f"Index must be an integer, got '{index}'")
 
     if i < 0 or i >= len(documents):
         raise HTTPException(
             status_code=404,
-            detail=f"Index {i} is out of range — catalog has {len(documents)} documents (0–{len(documents)-1})",
+            detail=f"Index {i} out of range — catalog has {len(documents)} documents (0–{len(documents)-1})",
         )
 
     item = documents[i]
-
-    if isinstance(item, (dict, list)):
-        return to_yaml_response(item)
-    return to_yaml_response({"value": item})
+    return to_yaml_response(item if isinstance(item, (dict, list)) else {"value": item})
 
 
 @app.get(
@@ -243,47 +164,15 @@ def get_catalog_item(
 def get_file(
     owner: str,
     repo: str,
-    path: str = Query(..., description="Path to the file within the repo, e.g. src/config.json"),
-    ref: str = Query("HEAD", description="Branch, tag, or commit SHA (default: HEAD)"),
-    raw: bool = Query(False, description="If true, return raw YAML without metadata wrapper"),
-    gh: Github = Depends(get_github_client),
+    path: str = Query(..., description="Path to the file within the repo"),
+    ref: str = Query("HEAD", description="Branch, tag, or commit SHA"),
+    raw: bool = Query(False, description="If true, return content only (no metadata wrapper)"),
 ):
-    """
-    Fetch **a single file** from a GitHub repository and return it as YAML.
-
-    - Supports any text-based file (JSON, YAML, plain text, config files, etc.)
-    - JSON and YAML files are parsed into structured objects before serialising
-    - Set `raw=true` to get just the file content (no metadata envelope)
-    """
+    """Fetch a single file from a GitHub repository via the file service."""
     try:
-        repository = gh.get_repo(f"{owner}/{repo}")
-    except GithubException as exc:
-        raise HTTPException(status_code=404, detail=f"Repository not found: {exc.data.get('message', exc)}")
-
-    try:
-        file_content = repository.get_contents(path, ref=ref)
-    except GithubException as exc:
-        raise HTTPException(status_code=404, detail=f"File not found: {exc.data.get('message', exc)}")
-
-    if isinstance(file_content, list):
-        raise HTTPException(status_code=400, detail="Path points to a directory — use /tree endpoint instead")
-
-    raw_bytes = base64.b64decode(file_content.content)
-    parsed = decode_content(raw_bytes, path)
-
-    if raw:
-        return to_yaml_response(parsed if isinstance(parsed, dict) else {"content": parsed})
-
-    envelope = {
-        "repo": f"{owner}/{repo}",
-        "path": file_content.path,
-        "branch": ref,
-        "sha": file_content.sha,
-        "size": file_content.size,
-        "html_url": file_content.html_url,
-        "content": parsed,
-    }
-    return to_yaml_response(envelope)
+        return _proxy_response(get_client().proxy_file(owner, repo, path, ref=ref, raw=raw))
+    except Exception as exc:
+        raise _service_error(exc, f"File not found: {owner}/{repo}/{path}@{ref}")
 
 
 @app.get(
@@ -295,47 +184,14 @@ def get_file(
 def get_tree(
     owner: str,
     repo: str,
-    path: str = Query("", description="Directory path (empty string = repo root)"),
+    path: str = Query("", description="Directory path (empty = repo root)"),
     ref: str = Query("HEAD", description="Branch, tag, or commit SHA"),
-    gh: Github = Depends(get_github_client),
 ):
-    """
-    List the **contents of a directory** in a GitHub repository as YAML.
-    Returns file names, paths, types, sizes, and SHAs.
-    """
+    """List the contents of a directory in a GitHub repository."""
     try:
-        repository = gh.get_repo(f"{owner}/{repo}")
-    except GithubException as exc:
-        raise HTTPException(status_code=404, detail=f"Repository not found: {exc.data.get('message', exc)}")
-
-    try:
-        contents = repository.get_contents(path or "/", ref=ref)
-    except GithubException as exc:
-        raise HTTPException(status_code=404, detail=f"Path not found: {exc.data.get('message', exc)}")
-
-    if not isinstance(contents, list):
-        contents = [contents]
-
-    items = [
-        {
-            "name": item.name,
-            "path": item.path,
-            "type": item.type,  # "file" or "dir"
-            "size": item.size,
-            "sha": item.sha,
-            "html_url": item.html_url,
-        }
-        for item in sorted(contents, key=lambda x: (x.type != "dir", x.name))
-    ]
-
-    result = {
-        "repo": f"{owner}/{repo}",
-        "path": path or "/",
-        "ref": ref,
-        "count": len(items),
-        "entries": items,
-    }
-    return to_yaml_response(result)
+        return _proxy_response(get_client().proxy_tree(owner, repo, path=path, ref=ref))
+    except Exception as exc:
+        raise _service_error(exc, f"Path not found: {owner}/{repo}/{path}@{ref}")
 
 
 @app.get(
@@ -349,41 +205,12 @@ def get_multiple_files(
     repo: str,
     paths: list[str] = Query(..., description="One or more file paths (repeat ?paths= for each)"),
     ref: str = Query("HEAD", description="Branch, tag, or commit SHA"),
-    gh: Github = Depends(get_github_client),
 ):
-    """
-    Fetch **multiple files** in a single request.
-    Returns all files in one YAML document, keyed by path.
-    Files that cannot be found are included with an `error` field.
-    """
+    """Fetch multiple files in a single request via the file service."""
     try:
-        repository = gh.get_repo(f"{owner}/{repo}")
-    except GithubException as exc:
-        raise HTTPException(status_code=404, detail=f"Repository not found: {exc.data.get('message', exc)}")
-
-    results = {}
-    for path in paths:
-        try:
-            fc = repository.get_contents(path, ref=ref)
-            if isinstance(fc, list):
-                results[path] = {"error": "path is a directory"}
-                continue
-            raw_bytes = base64.b64decode(fc.content)
-            parsed = decode_content(raw_bytes, path)
-            results[path] = {
-                "sha": fc.sha,
-                "size": fc.size,
-                "content": parsed,
-            }
-        except GithubException as exc:
-            results[path] = {"error": exc.data.get("message", str(exc))}
-
-    envelope = {
-        "repo": f"{owner}/{repo}",
-        "ref": ref,
-        "files": results,
-    }
-    return to_yaml_response(envelope)
+        return _proxy_response(get_client().proxy_files(owner, repo, paths, ref=ref))
+    except Exception as exc:
+        raise _service_error(exc, f"Failed to fetch files from {owner}/{repo}@{ref}")
 
 
 # ── Catalog resolve endpoint ─────────────────────────────────────────────────
@@ -525,31 +352,9 @@ def get_building_block(
     response_class=Response,
     responses={200: {"content": {"text/yaml": {}}}},
 )
-def get_repo_info(
-    owner: str,
-    repo: str,
-    gh: Github = Depends(get_github_client),
-):
-    """Return basic repository metadata as YAML."""
+def get_repo_info(owner: str, repo: str):
+    """Return basic repository metadata via the file service."""
     try:
-        repository = gh.get_repo(f"{owner}/{repo}")
-    except GithubException as exc:
-        raise HTTPException(status_code=404, detail=f"Repository not found: {exc.data.get('message', exc)}")
-
-    info = {
-        "name": repository.name,
-        "full_name": repository.full_name,
-        "description": repository.description,
-        "default_branch": repository.default_branch,
-        "private": repository.private,
-        "language": repository.language,
-        "stars": repository.stargazers_count,
-        "forks": repository.forks_count,
-        "open_issues": repository.open_issues_count,
-        "topics": repository.get_topics(),
-        "created_at": str(repository.created_at),
-        "updated_at": str(repository.updated_at),
-        "clone_url": repository.clone_url,
-        "html_url": repository.html_url,
-    }
-    return to_yaml_response(info)
+        return _proxy_response(get_client().proxy_repo_info(owner, repo))
+    except Exception as exc:
+        raise _service_error(exc, f"Repository not found: {owner}/{repo}")
