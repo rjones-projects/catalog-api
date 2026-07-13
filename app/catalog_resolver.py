@@ -156,22 +156,23 @@ class CatalogResolver:
             name = (doc.get("metadata") or {}).get("name", "")
             if not name:
                 continue
-            depends_on = (doc.get("spec") or {}).get("dependsOn") or []
-            mapping[name] = self._parse_depends_on(depends_on)
+            terraform_modules = (doc.get("spec") or {}).get("terraformModules") or []
+            mapping[name] = self._parse_terraform_modules(terraform_modules)
 
         return mapping
 
     @staticmethod
-    def _parse_depends_on(depends_on: list) -> list[str]:
+    def _parse_terraform_modules(terraform_modules: list) -> list[str]:
         modules = []
-        for dep in depends_on:
-            if isinstance(dep, dict):
+        for entry in terraform_modules:
+            if isinstance(entry, dict):
                 # "Component: module_name" (space after colon) is parsed by YAML
-                # as {"Component": "module_name"} — extract the value directly.
-                name = str(next(iter(dep.values()), "")).strip()
+                # as {"Component": "module_name"}. Sibling keys like dependsOn/wire
+                # may also be present, so read the Component key explicitly.
+                name = str(entry.get("Component", "")).strip()
             else:
                 # "Component:module_name" (no space) stays as a plain string.
-                name = re.sub(r"^Component:\s*", "", str(dep)).strip()
+                name = re.sub(r"^Component:\s*", "", str(entry)).strip()
             if name and re.match(r"^[a-zA-Z][a-zA-Z0-9_]*$", name):
                 modules.append(name)
         return modules
