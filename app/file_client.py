@@ -49,6 +49,10 @@ def _identity_token(audience: str) -> str:
         except google.auth.exceptions.DefaultCredentialsError:
             token = _gcloud_identity_token(audience)
         _cached_tokens[audience] = (token, _token_expiry(token))
+        # TEMP DEBUG: remove once the 403 is diagnosed
+        _p = token.split(".")[1]
+        _c = json.loads(base64.urlsafe_b64decode(_p + "=" * (-len(_p) % 4)))
+        print(f"[repo-api auth] email={_c.get('email')} aud={_c.get('aud')} target={audience}", flush=True)
         return token
 
 
